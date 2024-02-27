@@ -3,6 +3,7 @@ import http from 'http';
 import dotenv from 'dotenv';
 import * as admin from 'firebase-admin';
 import { v4 as uuidv4 } from 'uuid';
+import { ExtendedCategory } from '@hyggeclub/models';
 
 dotenv.config();
 
@@ -20,17 +21,6 @@ admin.initializeApp({
 });
 
 const db = admin.firestore();
-
-interface Category {
-  name: string;
-  category_id: string;
-  icon_name: string;
-  subscribed?: boolean; // Optional property to indicate subscription status
-}
-
-interface ExtendedCategory extends Category {
-  subscribed?: boolean;
-}
 
 const app = express();
 const port = process.env.PORT || 3000;
