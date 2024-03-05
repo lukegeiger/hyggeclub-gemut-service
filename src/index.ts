@@ -27,6 +27,11 @@ const redisClient: RedisClientType = createClient({
   },
 });
 
+redisClient.on('error', (err) => console.error('Redis Client Error', err));
+redisClient.connect()
+  .then(() => console.log('Connected to Redis successfully'))
+  .catch((err) => console.error('Failed to connect to Redis', err));
+
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
