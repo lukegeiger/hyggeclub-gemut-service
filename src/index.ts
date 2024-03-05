@@ -172,36 +172,6 @@ app.get('/news-subscriptions', async (req, res) => {
   }
 });
 
-async function fetchLatestArticlesForCategory(
-  redisClient: RedisClientType,
-  categoryId: string,
-  limit: number = 10 // Default to fetching 10 latest articles
-): Promise<ScoredArticle[]> {
-  const categorySortedSetName = `articlesByCategory:${categoryId}`;
-  const categoryHashName = `articlesHash:${categoryId}`;
-  const articles: ScoredArticle[] = [];
-
-  try {
-    // Fetch the latest article IDs from the sorted set
-
-    const articleIds = await redisClient.zRange(categorySortedSetName, limit, -1);
-
-    // Fetch each article's details from the hash
-    for (const articleId of articleIds) {
-      const articleJson = await redisClient.hGet(categoryHashName, articleId);
-      if (articleJson) {
-        const article: ScoredArticle = JSON.parse(articleJson);
-        articles.push(article);
-      }
-    }
-  } catch (error) {
-    console.error(`Failed to fetch articles for category ${categoryId}:`, error);
-    throw error; // Rethrow the error to be handled by the caller
-  }
-
-  return articles;
-}
-
 async function updateUsersCombinedFeed(
   redisClient: RedisClientType, 
   user_id: string, 
@@ -231,27 +201,21 @@ async function removeCategoryFromUsersCombinedFeed(
   userUuid: string, 
   categoryId: string
 ): Promise<void> {
-  const categoryFeedOrderKey = `user:${userUuid}:category:${categoryId}:newsfeed:order`;
+  // Only manipulate the user's combinedFeed, no action on categoryFeedOrderKey/categoryFeedKey
   const userCombinedFeedOrderKey = `user:${userUuid}:combinedFeed:order`;
 
   try {
-    const articleIds = await redisClient.zRange(categoryFeedOrderKey, 0, -1);
+    const articleIds = await redisClient.zRange(userCombinedFeedOrderKey, 0, -1);
 
-    if (articleIds.length > 0) {
-      // If batch removal isn't supported or unclear, remove each article ID individually.
-      await Promise.all(articleIds.map(articleId =>
-        redisClient.zRem(userCombinedFeedOrderKey, articleId)
-      ));
-
-      // Clean up category-specific data
-      await redisClient.del(categoryFeedOrderKey);
-      const categoryFeedKey = `user:${userUuid}:category:${categoryId}:newsfeed:metadata`;
-      await redisClient.del(categoryFeedKey);
-    }
+    // Remove articles associated with the unsubscribed category from the combinedFeed.
+    await Promise.all(articleIds.map(articleId =>
+      redisClient.zRem(userCombinedFeedOrderKey, articleId)
+    ));
   } catch (error) {
-    console.error(`[Remove Category Feed Error] User UUID: ${userUuid}, Category ID: ${categoryId}, Error: ${error}`);
+    console.error(`[Remove Combined Feed Error] User UUID: ${userUuid}, Category ID: ${categoryId}, Error: ${error}`);
   }
 }
+
 
 app.use((err: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('Error middleware triggered:', err);
