@@ -184,18 +184,19 @@ async function updateUsersCombinedFeed(
 ): Promise<void> {
   const categoryFeedOrderKey = `user:${user_id}:category:${category_id}:newsfeed:order`;
   const userCombinedFeedOrderKey = `user:${user_id}:combinedFeed:order`;
-  console.log(`categoryFeedOrderKey: ${categoryFeedOrderKey} userCombinedFeedOrderKey: ${userCombinedFeedOrderKey}`);
 
   try {
     // Fetch article IDs and their scores from the category-specific sorted set
     const articlesAndScores = await redisClient.zRangeWithScores(categoryFeedOrderKey, 0, -1);
-    console.log(`articlesAndScores: ${articlesAndScores}`);
 
     // Append each article to the user's combined feed sorted set with its score
     for (const {score, value: articleId} of articlesAndScores) {
+      // Create a JSON object representing the combined article and category ID
+      const combinedValue = JSON.stringify({ categoryId: category_id, articleId: articleId });
+      
       await redisClient.zAdd(userCombinedFeedOrderKey, {
         score, // Keep the original score to maintain the sorting
-        value: articleId
+        value: combinedValue // Store the JSON string as the value
       });
     }
   } catch (error) {
@@ -203,26 +204,36 @@ async function updateUsersCombinedFeed(
   }
 }
 
+
 async function removeCategoryFromUsersCombinedFeed(
   redisClient: RedisClientType, 
   userUuid: string, 
   categoryId: string
 ): Promise<void> {
-  // Only manipulate the user's combinedFeed, no action on categoryFeedOrderKey/categoryFeedKey
   const userCombinedFeedOrderKey = `user:${userUuid}:combinedFeed:order`;
-  console.log(`${userCombinedFeedOrderKey}`);
 
   try {
-    const articleIds = await redisClient.zRange(userCombinedFeedOrderKey, 0, -1);
+    // Fetch all combined values (article IDs with category IDs) from the user's combined feed
+    const combinedValues = await redisClient.zRange(userCombinedFeedOrderKey, 0, -1);
 
-    // Remove articles associated with the unsubscribed category from the combinedFeed.
-    await Promise.all(articleIds.map(articleId =>
-      redisClient.zRem(userCombinedFeedOrderKey, articleId)
-    ));
+    // Filter out articles associated with the unsubscribed category
+    const articlesToRemove = combinedValues.filter(value => {
+      // Decode each combined value from JSON
+      const decoded = JSON.parse(value);
+      return decoded.categoryId === categoryId;
+    });
+
+    // Remove filtered articles from the combined feed
+    if (articlesToRemove.length > 0) {
+      await Promise.all(articlesToRemove.map(combinedValue =>
+        redisClient.zRem(userCombinedFeedOrderKey, combinedValue)
+      ));
+    }
   } catch (error) {
     console.error(`[Remove Combined Feed Error] User UUID: ${userUuid}, Category ID: ${categoryId}, Error: ${error}`);
   }
 }
+
 
 
 app.use((err: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
