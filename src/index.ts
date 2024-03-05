@@ -4,6 +4,8 @@ import dotenv from 'dotenv';
 import * as admin from 'firebase-admin';
 import { v4 as uuidv4 } from 'uuid';
 import { ExtendedCategory } from '@hyggeclub/models';
+import { createClient, RedisClientType } from 'redis';
+import { ScoredArticle, HyggeArticle } from '@hyggeclub/models';
 
 dotenv.config();
 
@@ -15,6 +17,15 @@ if (!serviceAccount) {
   console.error('Firebase service account credentials are not defined in FIREBASE_SERVICE_ACCOUNT');
   process.exit(1);
 }
+
+// Redis client initialization
+const redisClient: RedisClientType = createClient({
+  password: process.env.REDIS_PASSWORD,
+  socket: {
+    host: process.env.REDIS_HOST,
+    port: parseInt(process.env.REDIS_PORT || '6379'),
+  },
+});
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -76,13 +87,16 @@ app.post('/subscribe', async (req, res) => {
   const uuid = uuidv4(); // Generate UUID
 
   try {
-    const subscriptionRef = db.collection('news_subscriptions').doc(uuid); // Reference document with UUID
-    await subscriptionRef.set({ // Use set() instead of add()
+    const subscriptionRef = db.collection('news_subscriptions').doc(uuid);
+    await subscriptionRef.set({
       user_id,
       category_id,
       uuid,
       subscribed_at: admin.firestore.FieldValue.serverTimestamp(),
     });
+
+    // Logic to update user's combined feed
+    await updateUsersCombinedFeed(redisClient, user_id, category_id);
 
     res.status(200).send({ message: 'Subscribed successfully', subscriptionId: uuid });
   } catch (err) {
@@ -108,9 +122,12 @@ app.post('/unsubscribe', async (req, res) => {
       return res.status(404).send('Subscription not found');
     }
 
-    snapshot.forEach((doc) => {
-      doc.ref.delete();
+    snapshot.forEach(async (doc) => {
+      await doc.ref.delete();
     });
+
+    // Logic to remove category articles from user's combined feed
+    await removeCategoryFromUsersCombinedFeed(redisClient, user_id, category_id);
 
     res.status(200).send('Unsubscribed successfully');
   } catch (err) {
@@ -118,6 +135,7 @@ app.post('/unsubscribe', async (req, res) => {
     res.status(500).send('Failed to unsubscribe');
   }
 });
+
 
 app.get('/news-subscriptions', async (req, res) => {
   const userId = req.query.user_id as string; // Ensure userId is treated as a string
@@ -153,6 +171,87 @@ app.get('/news-subscriptions', async (req, res) => {
     res.status(500).send('Failed to fetch subscriptions');
   }
 });
+
+async function fetchLatestArticlesForCategory(
+  redisClient: RedisClientType,
+  categoryId: string,
+  limit: number = 10 // Default to fetching 10 latest articles
+): Promise<ScoredArticle[]> {
+  const categorySortedSetName = `articlesByCategory:${categoryId}`;
+  const categoryHashName = `articlesHash:${categoryId}`;
+  const articles: ScoredArticle[] = [];
+
+  try {
+    // Fetch the latest article IDs from the sorted set
+
+    const articleIds = await redisClient.zRange(categorySortedSetName, limit, -1);
+
+    // Fetch each article's details from the hash
+    for (const articleId of articleIds) {
+      const articleJson = await redisClient.hGet(categoryHashName, articleId);
+      if (articleJson) {
+        const article: ScoredArticle = JSON.parse(articleJson);
+        articles.push(article);
+      }
+    }
+  } catch (error) {
+    console.error(`Failed to fetch articles for category ${categoryId}:`, error);
+    throw error; // Rethrow the error to be handled by the caller
+  }
+
+  return articles;
+}
+
+async function updateUsersCombinedFeed(
+  redisClient: RedisClientType, 
+  user_id: string, 
+  category_id: string
+): Promise<void> {
+  const categoryFeedOrderKey = `user:${user_id}:category:${category_id}:newsfeed:order`;
+  const userCombinedFeedOrderKey = `user:${user_id}:combinedFeed:order`;
+
+  try {
+    // Fetch article IDs and their scores from the category-specific sorted set
+    const articlesAndScores = await redisClient.zRangeWithScores(categoryFeedOrderKey, 0, -1);
+
+    // Append each article to the user's combined feed sorted set with its score
+    for (const {score, value: articleId} of articlesAndScores) {
+      await redisClient.zAdd(userCombinedFeedOrderKey, {
+        score, // Keep the original score to maintain the sorting
+        value: articleId
+      });
+    }
+  } catch (error) {
+    console.error(`[Update Combined Feed Error] User ID: ${user_id}, Category ID: ${category_id}, Error: ${error}`);
+  }
+}
+
+async function removeCategoryFromUsersCombinedFeed(
+  redisClient: RedisClientType, 
+  userUuid: string, 
+  categoryId: string
+): Promise<void> {
+  const categoryFeedOrderKey = `user:${userUuid}:category:${categoryId}:newsfeed:order`;
+  const userCombinedFeedOrderKey = `user:${userUuid}:combinedFeed:order`;
+
+  try {
+    const articleIds = await redisClient.zRange(categoryFeedOrderKey, 0, -1);
+
+    if (articleIds.length > 0) {
+      // If batch removal isn't supported or unclear, remove each article ID individually.
+      await Promise.all(articleIds.map(articleId =>
+        redisClient.zRem(userCombinedFeedOrderKey, articleId)
+      ));
+
+      // Clean up category-specific data
+      await redisClient.del(categoryFeedOrderKey);
+      const categoryFeedKey = `user:${userUuid}:category:${categoryId}:newsfeed:metadata`;
+      await redisClient.del(categoryFeedKey);
+    }
+  } catch (error) {
+    console.error(`[Remove Category Feed Error] User UUID: ${userUuid}, Category ID: ${categoryId}, Error: ${error}`);
+  }
+}
 
 app.use((err: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('Error middleware triggered:', err);
