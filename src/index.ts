@@ -179,10 +179,12 @@ async function updateUsersCombinedFeed(
 ): Promise<void> {
   const categoryFeedOrderKey = `user:${user_id}:category:${category_id}:newsfeed:order`;
   const userCombinedFeedOrderKey = `user:${user_id}:combinedFeed:order`;
+  console.log(`categoryFeedOrderKey: ${categoryFeedOrderKey} userCombinedFeedOrderKey: ${userCombinedFeedOrderKey}`);
 
   try {
     // Fetch article IDs and their scores from the category-specific sorted set
     const articlesAndScores = await redisClient.zRangeWithScores(categoryFeedOrderKey, 0, -1);
+    console.log(`articlesAndScores: ${articlesAndScores}`);
 
     // Append each article to the user's combined feed sorted set with its score
     for (const {score, value: articleId} of articlesAndScores) {
@@ -203,6 +205,7 @@ async function removeCategoryFromUsersCombinedFeed(
 ): Promise<void> {
   // Only manipulate the user's combinedFeed, no action on categoryFeedOrderKey/categoryFeedKey
   const userCombinedFeedOrderKey = `user:${userUuid}:combinedFeed:order`;
+  console.log(`${userCombinedFeedOrderKey}`);
 
   try {
     const articleIds = await redisClient.zRange(userCombinedFeedOrderKey, 0, -1);
