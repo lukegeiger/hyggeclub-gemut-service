@@ -5,7 +5,6 @@ import * as admin from 'firebase-admin';
 import { v4 as uuidv4 } from 'uuid';
 import { ExtendedCategory } from '@hyggeclub/models';
 import { createClient, RedisClientType } from 'redis';
-import { ScoredArticle, HyggeArticle } from '@hyggeclub/models';
 
 dotenv.config();
 
@@ -233,8 +232,6 @@ async function removeCategoryFromUsersCombinedFeed(
     console.error(`[Remove Combined Feed Error] User UUID: ${userUuid}, Category ID: ${categoryId}, Error: ${error}`);
   }
 }
-
-
 
 app.use((err: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('Error middleware triggered:', err);
