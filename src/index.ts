@@ -3,7 +3,7 @@ import http from 'http';
 import dotenv from 'dotenv';
 import * as admin from 'firebase-admin';
 import { v4 as uuidv4 } from 'uuid';
-import { ExtendedCategory } from '@hyggeclub/models';
+import { Category } from '@hyggeclub/models';
 import { createClient, RedisClientType } from 'redis';
 
 dotenv.config();
@@ -51,11 +51,11 @@ app.get('/categories', async (req, res) => {
   try {
     const categoriesRef = db.collection('news_categories');
     const categoriesSnapshot = await categoriesRef.get();
-    const categories: ExtendedCategory[] = [];  // Use the ExtendedCategory interface
+    const categories: Category[] = [];  // Use the ExtendedCategory interface
 
     for (const doc of categoriesSnapshot.docs) {
       // Construct the base category object with the ExtendedCategory interface
-      const category: ExtendedCategory = {
+      const category: Category = {
         name: doc.data().name,
         category_id: doc.id,
         icon_name: doc.data().icon_name,
