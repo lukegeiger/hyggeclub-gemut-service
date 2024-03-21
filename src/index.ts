@@ -100,7 +100,7 @@ app.post('/subscribe', async (req, res) => {
     });
 
     // Logic to update user's combined feed
-    await updateUsersCombinedFeed(redisClient, user_id, category_id);
+    await updateUsersPersonalizedFeed(redisClient, user_id, category_id);
 
     res.status(200).send({ message: 'Subscribed successfully', subscriptionId: uuid });
   } catch (err) {
@@ -131,7 +131,7 @@ app.post('/unsubscribe', async (req, res) => {
     });
 
     // Logic to remove category articles from user's combined feed
-    await removeCategoryFromUsersCombinedFeed(redisClient, user_id, category_id);
+    await removeCategoryFromUsersPersonalizedFeed(redisClient, user_id, category_id);
 
     res.status(200).send('Unsubscribed successfully');
   } catch (err) {
@@ -176,62 +176,59 @@ app.get('/news-subscriptions', async (req, res) => {
   }
 });
 
-async function updateUsersCombinedFeed(
+async function updateUsersPersonalizedFeed(
   redisClient: RedisClientType, 
-  user_id: string, 
-  category_id: string
-): Promise<void> {
-  const categoryFeedOrderKey = `user:${user_id}:category:${category_id}:newsfeed:order`;
-  const userCombinedFeedOrderKey = `user:${user_id}:combinedFeed:order`;
+  userId: string, 
+  categoryId: string): Promise<void> {
+  const personalizedFeedKey = `userPersonalizedFeed:sorted:${userId}`;
+  const categoryClusterKey = `clusteredNewsSectionCategoryClusterForCategory:${categoryId}`;
 
   try {
-    // Fetch article IDs and their scores from the category-specific sorted set
-    const articlesAndScores = await redisClient.zRangeWithScores(categoryFeedOrderKey, 0, -1);
+    // Fetch cluster IDs and their scores for the given category
+    const clustersAndScores = await redisClient.zRangeWithScores(categoryClusterKey, 0, -1);
 
-    // Append each article to the user's combined feed sorted set with its score
-    for (const {score, value: articleId} of articlesAndScores) {
-      // Create a JSON object representing the combined article and category ID
-      const combinedValue = JSON.stringify({ categoryId: category_id, articleId: articleId });
-      
-      await redisClient.zAdd(userCombinedFeedOrderKey, {
-        score, // Keep the original score to maintain the sorting
-        value: combinedValue // Store the JSON string as the value
+    // Update the user's personalized feed with these clusters
+    for (const {score, value: clusterId} of clustersAndScores) {
+      // Fetch cluster details to get the score for the user, adjust logic as necessary
+      const clusterJson = await redisClient.hGet(`userComprehensiveFeed:hash:${userId}`, clusterId);
+      if (!clusterJson) continue; // Skip if no cluster details found
+
+      const cluster = JSON.parse(clusterJson);
+      const userScore = cluster.score_for_user ?? score; // Fallback to the category score if user-specific score not found
+
+      // Add/update the cluster in the user's personalized feed sorted set
+      await redisClient.zAdd(personalizedFeedKey, {
+        score: -Math.abs(userScore), // Store as negative to sort in descending order
+        value: clusterId
       });
     }
   } catch (error) {
-    console.error(`[Update Combined Feed Error] User ID: ${user_id}, Category ID: ${category_id}, Error: ${error}`);
+    console.error(`[Update Personalized Feed Error] User ID: ${userId}, Category ID: ${categoryId}, Error: ${error}`);
   }
 }
 
-
-async function removeCategoryFromUsersCombinedFeed(
+async function removeCategoryFromUsersPersonalizedFeed(
   redisClient: RedisClientType, 
   userUuid: string, 
   categoryId: string
 ): Promise<void> {
-  const userCombinedFeedOrderKey = `user:${userUuid}:combinedFeed:order`;
+  const personalizedFeedKey = `userPersonalizedFeed:sorted:${userUuid}`;
+  const categoryClusterKey = `clusteredNewsSectionCategoryClusterForCategory:${categoryId}`;
 
   try {
-    // Fetch all combined values (article IDs with category IDs) from the user's combined feed
-    const combinedValues = await redisClient.zRange(userCombinedFeedOrderKey, 0, -1);
+    // Fetch all cluster IDs for the category
+    const categoryClusterIds = await redisClient.zRange(categoryClusterKey, 0, -1);
 
-    // Filter out articles associated with the unsubscribed category
-    const articlesToRemove = combinedValues.filter(value => {
-      // Decode each combined value from JSON
-      const decoded = JSON.parse(value);
-      return decoded.categoryId === categoryId;
-    });
-
-    // Remove filtered articles from the combined feed
-    if (articlesToRemove.length > 0) {
-      await Promise.all(articlesToRemove.map(combinedValue =>
-        redisClient.zRem(userCombinedFeedOrderKey, combinedValue)
-      ));
+    // Ensure there are clusters to remove
+    if (categoryClusterIds.length > 0) {
+      // Correctly passing a single array of cluster IDs to zRem
+      await redisClient.zRem(personalizedFeedKey, categoryClusterIds);
     }
   } catch (error) {
-    console.error(`[Remove Combined Feed Error] User UUID: ${userUuid}, Category ID: ${categoryId}, Error: ${error}`);
+    console.error(`[Remove Personalized Feed Error] User UUID: ${userUuid}, Category ID: ${categoryId}, Error: ${error}`);
   }
 }
+
 
 app.use((err: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('Error middleware triggered:', err);
