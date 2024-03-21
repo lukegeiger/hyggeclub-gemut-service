@@ -185,18 +185,27 @@ async function updateUsersPersonalizedFeed(
   const comprehensiveFeedHashKey = `userComprehensiveFeed:hash:${userId}`;
   const categoryClusterKey = `clusteredNewsSectionCategoryClusterForCategory:${categoryId}`;
 
+  console.log(`[updateUsersPersonalizedFeed] Fetching cluster IDs for category ${categoryId} for user ${userId}`);
+  
   // Fetch cluster IDs from the standard set
   const categoryClusterIds: string[] = await redisClient.sMembers(categoryClusterKey);
+  console.log(`[updateUsersPersonalizedFeed] Fetched cluster IDs: ${categoryClusterIds.join(', ')}`);
 
   for (const clusterId of categoryClusterIds) {
+    console.log(`[updateUsersPersonalizedFeed] Fetching details for cluster ID: ${clusterId}`);
+    
     // Fetch the cluster details to get the score for the user
     const clusterJson = await redisClient.hGet(comprehensiveFeedHashKey, clusterId);
     if (clusterJson) {
       const cluster: ArticleCluster = JSON.parse(clusterJson);
       const score = cluster.score_for_user ?? 0; // Use the personalized score, fallback to 0 if not available
 
+      console.log(`[updateUsersPersonalizedFeed] Adding cluster ${clusterId} with score ${score} to personalized feed for user ${userId}`);
+      
       // Add to the sorted set with the personalized score
       await redisClient.zAdd(personalizedFeedKey, [{ score: -Math.abs(score), value: clusterId }]);
+    } else {
+      console.log(`[updateUsersPersonalizedFeed] No details found for cluster ID: ${clusterId}`);
     }
   }
 }
@@ -209,12 +218,18 @@ async function removeCategoryFromUsersPersonalizedFeed(
   const personalizedFeedKey = `userPersonalizedFeed:sorted:${userUuid}`;
   const categoryClusterKey = `clusteredNewsSectionCategoryClusterForCategory:${categoryId}`;
 
+  console.log(`[removeCategoryFromUsersPersonalizedFeed] Removing clusters for category ${categoryId} from personalized feed for user ${userUuid}`);
+  
   // Fetch cluster IDs from the standard set
   const categoryClusterIds: string[] = await redisClient.sMembers(categoryClusterKey);
+  console.log(`[removeCategoryFromUsersPersonalizedFeed] Cluster IDs to remove: ${categoryClusterIds.join(', ')}`);
 
   // Remove these cluster IDs from the sorted set
   if (categoryClusterIds.length > 0) {
     await redisClient.zRem(personalizedFeedKey, categoryClusterIds);
+    console.log(`[removeCategoryFromUsersPersonalizedFeed] Removed clusters from personalized feed for user ${userUuid}`);
+  } else {
+    console.log(`[removeCategoryFromUsersPersonalizedFeed] No clusters found for category ${categoryId}`);
   }
 }
 
