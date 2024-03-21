@@ -201,8 +201,6 @@ async function updateUsersPersonalizedFeed(
   }
 }
 
-
-
 async function removeCategoryFromUsersPersonalizedFeed(
   redisClient: RedisClientType, 
   userUuid: string, 
