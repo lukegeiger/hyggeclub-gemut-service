@@ -3,7 +3,7 @@ import http from 'http';
 import dotenv from 'dotenv';
 import * as admin from 'firebase-admin';
 import { v4 as uuidv4 } from 'uuid';
-import { Category } from '@hyggeclub/models';
+import { Category, ArticleCluster } from '@hyggeclub/models';
 import { createClient, RedisClientType } from 'redis';
 
 dotenv.config();
@@ -179,33 +179,29 @@ app.get('/news-subscriptions', async (req, res) => {
 async function updateUsersPersonalizedFeed(
   redisClient: RedisClientType, 
   userId: string, 
-  categoryId: string): Promise<void> {
+  categoryId: string
+): Promise<void> {
   const personalizedFeedKey = `userPersonalizedFeed:sorted:${userId}`;
+  const comprehensiveFeedHashKey = `userComprehensiveFeed:hash:${userId}`;
   const categoryClusterKey = `clusteredNewsSectionCategoryClusterForCategory:${categoryId}`;
 
-  try {
-    // Fetch cluster IDs and their scores for the given category
-    const clustersAndScores = await redisClient.zRangeWithScores(categoryClusterKey, 0, -1);
+  // Fetch cluster IDs from the standard set
+  const categoryClusterIds: string[] = await redisClient.sMembers(categoryClusterKey);
 
-    // Update the user's personalized feed with these clusters
-    for (const {score, value: clusterId} of clustersAndScores) {
-      // Fetch cluster details to get the score for the user, adjust logic as necessary
-      const clusterJson = await redisClient.hGet(`userComprehensiveFeed:hash:${userId}`, clusterId);
-      if (!clusterJson) continue; // Skip if no cluster details found
+  for (const clusterId of categoryClusterIds) {
+    // Fetch the cluster details to get the score for the user
+    const clusterJson = await redisClient.hGet(comprehensiveFeedHashKey, clusterId);
+    if (clusterJson) {
+      const cluster: ArticleCluster = JSON.parse(clusterJson);
+      const score = cluster.score_for_user ?? 0; // Use the personalized score, fallback to 0 if not available
 
-      const cluster = JSON.parse(clusterJson);
-      const userScore = cluster.score_for_user ?? score; // Fallback to the category score if user-specific score not found
-
-      // Add/update the cluster in the user's personalized feed sorted set
-      await redisClient.zAdd(personalizedFeedKey, {
-        score: -Math.abs(userScore), // Store as negative to sort in descending order
-        value: clusterId
-      });
+      // Add to the sorted set with the personalized score
+      await redisClient.zAdd(personalizedFeedKey, [{ score: -Math.abs(score), value: clusterId }]);
     }
-  } catch (error) {
-    console.error(`[Update Personalized Feed Error] User ID: ${userId}, Category ID: ${categoryId}, Error: ${error}`);
   }
 }
+
+
 
 async function removeCategoryFromUsersPersonalizedFeed(
   redisClient: RedisClientType, 
@@ -215,17 +211,12 @@ async function removeCategoryFromUsersPersonalizedFeed(
   const personalizedFeedKey = `userPersonalizedFeed:sorted:${userUuid}`;
   const categoryClusterKey = `clusteredNewsSectionCategoryClusterForCategory:${categoryId}`;
 
-  try {
-    // Fetch all cluster IDs for the category
-    const categoryClusterIds = await redisClient.zRange(categoryClusterKey, 0, -1);
+  // Fetch cluster IDs from the standard set
+  const categoryClusterIds: string[] = await redisClient.sMembers(categoryClusterKey);
 
-    // Ensure there are clusters to remove
-    if (categoryClusterIds.length > 0) {
-      // Correctly passing a single array of cluster IDs to zRem
-      await redisClient.zRem(personalizedFeedKey, categoryClusterIds);
-    }
-  } catch (error) {
-    console.error(`[Remove Personalized Feed Error] User UUID: ${userUuid}, Category ID: ${categoryId}, Error: ${error}`);
+  // Remove these cluster IDs from the sorted set
+  if (categoryClusterIds.length > 0) {
+    await redisClient.zRem(personalizedFeedKey, categoryClusterIds);
   }
 }
 
