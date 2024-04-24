@@ -65,7 +65,6 @@ app.get('/categories', async (req, res) => {
   }
 });
 
-
 app.post('/subscribe', async (req, res) => {
   const { user_id, category_id } = req.body;
 
