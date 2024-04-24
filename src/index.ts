@@ -124,7 +124,7 @@ app.get('/news-subscriptions', async (req, res) => {
   const fields = req.query.fields as string;
 
   if (!userId) {
-    return res.status(400).send('Missing user_id.');
+    return res.status(400).send('Missing user_id');
   }
 
   try {
