@@ -19,6 +19,7 @@
     "express-jwt": "^8.4.1",
     "firebase-admin": "^12.0.0",
     "jsonwebtoken": "^9.0.2",
+    "mongodb": "^6.5.0",
     "openai": "^4.26.1",
     "redis": "^4.6.13",
     "uuid": "^9.0.1",

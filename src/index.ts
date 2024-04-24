@@ -1,21 +1,12 @@
 import express from 'express';
 import http from 'http';
 import dotenv from 'dotenv';
-import * as admin from 'firebase-admin';
 import { v4 as uuidv4 } from 'uuid';
-import { Category, ArticleCluster } from '@hyggeclub/models';
+import { ArticleCluster } from '@hyggeclub/models';
 import { createClient, RedisClientType } from 'redis';
+import { newsSubscriptionsDbCollection ,newsCategoriesDbCollection } from './mongo-helper';
 
 dotenv.config();
-
-const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT
-  ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
-  : undefined;
-
-if (!serviceAccount) {
-  console.error('Firebase service account credentials are not defined in FIREBASE_SERVICE_ACCOUNT');
-  process.exit(1);
-}
 
 // Redis client initialization
 const redisClient: RedisClientType = createClient({
@@ -31,12 +22,6 @@ redisClient.connect()
   .then(() => console.log('Connected to Redis successfully'))
   .catch((err) => console.error('Failed to connect to Redis', err));
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-});
-
-const db = admin.firestore();
-
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -47,39 +32,39 @@ app.get('/test', (req, res) => {
 });
 
 app.get('/categories', async (req, res) => {
-  const userId = req.query.user_id as string;  // Ensure userId is treated as a string
-  try {
-    const categoriesRef = db.collection('news_categories');
-    const categoriesSnapshot = await categoriesRef.get();
-    const categories: Category[] = [];  // Use the ExtendedCategory interface
+  const userId = req.query.user_id as string;
 
-    for (const doc of categoriesSnapshot.docs) {
-      // Construct the base category object with the ExtendedCategory interface
-      const category: Category = {
-        name: doc.data().name,
-        category_id: doc.id,
-        icon_name: doc.data().icon_name,
+  try {
+    const categoriesCursor = await newsCategoriesDbCollection.find({});
+    const categories = await categoriesCursor.toArray();
+
+    const results = await Promise.all(categories.map(async category => {
+      const categoryObj = {
+        name: category.name,
+        category_id: category._id,
+        icon_name: category.icon_name,
+        subscribed: false
       };
 
-      // Conditionally add 'subscribed' property
       if (userId) {
-        const subscriptionSnapshot = await db.collection('news_subscriptions')
-          .where('user_id', '==', userId)
-          .where('category_id', '==', doc.id)
-          .get();
+        const subscriptionCount = await newsSubscriptionsDbCollection.count({
+          user_id: userId,
+          category_id: category._id.toString()
+        });
 
-        category.subscribed = !subscriptionSnapshot.empty;  // Now valid with ExtendedCategory
+        categoryObj.subscribed = subscriptionCount > 0;
       }
 
-      categories.push(category);
-    }
+      return categoryObj;
+    }));
 
-    res.json(categories);
+    res.json(results);
   } catch (err) {
     console.error('Failed to fetch categories:', err);
     res.status(500).send('Failed to fetch categories');
   }
 });
+
 
 app.post('/subscribe', async (req, res) => {
   const { user_id, category_id } = req.body;
@@ -88,15 +73,14 @@ app.post('/subscribe', async (req, res) => {
     return res.status(400).send('Missing user_id or category_id');
   }
 
-  const uuid = uuidv4(); // Generate UUID
+  const uuid = uuidv4();
 
   try {
-    const subscriptionRef = db.collection('news_subscriptions').doc(uuid);
-    await subscriptionRef.set({
+    await newsSubscriptionsDbCollection.insertOne({
       user_id,
       category_id,
       uuid,
-      subscribed_at: admin.firestore.FieldValue.serverTimestamp(),
+      subscribed_at: new Date() // MongoDB does not have a serverTimestamp equivalent
     });
 
     // Logic to update user's combined feed
@@ -117,18 +101,14 @@ app.post('/unsubscribe', async (req, res) => {
   }
 
   try {
-    const subscriptionsRef = db.collection('news_subscriptions')
-      .where('user_id', '==', user_id)
-      .where('category_id', '==', category_id);
-    const snapshot = await subscriptionsRef.get();
+    const deleteResult = await newsSubscriptionsDbCollection.deleteMany({
+      user_id,
+      category_id
+    });
 
-    if (snapshot.empty) {
+    if (deleteResult.deletedCount === 0) {
       return res.status(404).send('Subscription not found');
     }
-
-    snapshot.forEach(async (doc) => {
-      await doc.ref.delete();
-    });
 
     // Logic to remove category articles from user's combined feed
     await removeCategoryFromUsersPersonalizedFeed(redisClient, user_id, category_id);
@@ -140,33 +120,30 @@ app.post('/unsubscribe', async (req, res) => {
   }
 });
 
-
 app.get('/news-subscriptions', async (req, res) => {
-  const userId = req.query.user_id as string; // Ensure userId is treated as a string
-  const fields = req.query.fields as string; // This can be used to adjust the response structure
+  const userId = req.query.user_id as string;
+  const fields = req.query.fields as string;
 
   if (!userId) {
     return res.status(400).send('Missing user_id');
   }
 
   try {
-    const subscriptionsRef = db.collection('news_subscriptions').where('user_id', '==', userId);
-    const snapshot = await subscriptionsRef.get();
+    const subscriptionsCursor = await newsSubscriptionsDbCollection.find({ user_id: userId });
+    const subscriptions = await subscriptionsCursor.toArray();
 
-    if (snapshot.empty) {
+    if (subscriptions.length === 0) {
       return res.status(200).send([]);
     }
 
     let responseData;
-
-    // Check if the fields query parameter is provided and adjust the response accordingly
     if (fields === 'category_ids') {
-      const categoryIds = snapshot.docs.map(doc => doc.data().category_id);
-      responseData = categoryIds; // Return an array of category_id numbers
+      responseData = subscriptions.map(subscription => subscription.category_id);
     } else {
-      // Default behavior: return the whole news_subscription document instances
-      const subscriptions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      responseData = subscriptions;
+      responseData = subscriptions.map(subscription => ({
+        id: subscription._id,
+        ...subscription
+      }));
     }
 
     res.json(responseData);
@@ -232,7 +209,6 @@ async function removeCategoryFromUsersPersonalizedFeed(
     console.log(`[removeCategoryFromUsersPersonalizedFeed] No clusters found for category ${categoryId}`);
   }
 }
-
 
 app.use((err: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('Error middleware triggered:', err);
